@@ -21,4 +21,8 @@ Usage of ./fileserver:
 ./fileserver -path public -port 9001 &
 ```
 
+# Download
+
+See release page
+
 end.
