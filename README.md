@@ -23,5 +23,5 @@ Usage of ./fileserver:
 
 # Download
 
-See the [release](release) page.
+See the release page.
 
