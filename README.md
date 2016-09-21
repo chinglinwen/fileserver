@@ -8,6 +8,14 @@ A minimal download fileserver
 Usage of ./fileserver:
   -author
         Show author.
+  -logfile string
+        log filename and path (default "fs.log")
+  -logmaxage int
+        log max age (days) (default 28)
+  -logmaxbackups int
+        log max backups number (default 3)
+  -logmaxsize int
+        log max size(megabytes) (default 500)
   -path string
         File server path. (default ".")
   -port string
