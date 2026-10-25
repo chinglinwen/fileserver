@@ -1,3 +1,5 @@
+//go:build ignore
+
 /*
 fileserver is Simple File Server through http
 Can be used for yum repo, Or just share file through internet.
