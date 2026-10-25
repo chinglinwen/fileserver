@@ -28,11 +28,59 @@ func writeSecretFile(t *testing.T, dir string) (string, string) {
 
 func newTestServer(t *testing.T, root, secret string, maxBytes int64, rate float64) *httptest.Server {
 	t.Helper()
-	s := newFileServer(root, secret, maxBytes, rate)
+	return newTestServerAuth(t, root, secret, secret != "", maxBytes, rate)
+}
+
+func newTestServerAuth(t *testing.T, root, secret string, requireAuth bool, maxBytes int64, rate float64) *httptest.Server {
+	t.Helper()
+	s := newFileServer(root, secret, requireAuth, maxBytes, rate)
 	h := logHandler(s.ServeHTTP)
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+func TestNoAuthByDefault(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("public by exact url\n")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestServerAuth(t, dir, "", false, 1<<20, 0)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/file.txt", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(got, content) {
+		t.Fatalf("body mismatch")
+	}
+
+	reqRoot, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	respRoot, err := http.DefaultClient.Do(reqRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respRoot.Body.Close()
+	if respRoot.StatusCode != 404 {
+		t.Fatalf("root want 404, got %d", respRoot.StatusCode)
+	}
+
+	reqTrav, _ := http.NewRequest("GET", ts.URL+"/../file.txt", nil)
+	respTrav, err := http.DefaultClient.Do(reqTrav)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respTrav.Body.Close()
+	if respTrav.StatusCode != 404 {
+		t.Fatalf("traversal want 404, got %d", respTrav.StatusCode)
+	}
 }
 
 func TestAuthMissing(t *testing.T) {

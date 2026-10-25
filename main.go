@@ -1,9 +1,10 @@
 /*
-fileserver is a read-only file server with mandatory bearer auth.
+fileserver is a read-only file server.
 
 It serves files under a given path over HTTP on loopback by default.
-Auth is required via Authorization: Bearer <secret> where the secret
-is read from a mode-0600 file at startup.
+Downloads require no token unless -require-auth is set. With that flag,
+clients must send Authorization: Bearer <secret>, and the secret is read
+from a mode-0600 file at startup.
 
 See README.md and docs/hosting.md.
 */
@@ -33,7 +34,8 @@ func main() {
 	port := flag.String("port", "9000", "Port number.")
 	path := flag.String("path", ".", "File server path.")
 	addr := flag.String("addr", "127.0.0.1", "Listen address host.")
-	secretFile := flag.String("secret-file", "", "Path to bearer secret file (required; must be mode 0600).")
+	secretFile := flag.String("secret-file", "", "Path to bearer secret file (required only with -require-auth; must be mode 0600).")
+	requireAuth := flag.Bool("require-auth", false, "Require Authorization: Bearer <secret>. Off by default.")
 	maxBytes := flag.Int64("max-bytes", 67108864, "Maximum file size to serve in bytes.")
 	rate := flag.Float64("rate", 20, "Rate limit requests/sec per client IP (0 disables); burst 40.")
 	version := flag.Bool("v", false, "Show version.")
@@ -55,35 +57,38 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *secretFile == "" {
-		fmt.Fprintln(os.Stderr, "-secret-file is required (auth is mandatory)")
-		os.Exit(1)
-	}
+	sec := ""
+	if *requireAuth {
+		if *secretFile == "" {
+			fmt.Fprintln(os.Stderr, "-secret-file is required when -require-auth is set")
+			os.Exit(1)
+		}
 
-	// Read secret once; trim a single trailing newline.
-	data, err := os.ReadFile(*secretFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to read secret-file: %v\n", err)
-		os.Exit(1)
-	}
-	sec := string(data)
-	if len(sec) > 0 && sec[len(sec)-1] == '\n' {
-		sec = sec[:len(sec)-1]
-	}
-	if sec == "" {
-		fmt.Fprintln(os.Stderr, "secret-file is empty after trimming trailing newline")
-		os.Exit(1)
-	}
+		// Read secret once; trim a single trailing newline.
+		data, err := os.ReadFile(*secretFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to read secret-file: %v\n", err)
+			os.Exit(1)
+		}
+		sec = string(data)
+		if len(sec) > 0 && sec[len(sec)-1] == '\n' {
+			sec = sec[:len(sec)-1]
+		}
+		if sec == "" {
+			fmt.Fprintln(os.Stderr, "secret-file is empty after trimming trailing newline")
+			os.Exit(1)
+		}
 
-	// Enforce mode 0600 and regular file (no symlinks).
-	info, err := os.Lstat(*secretFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to stat secret-file: %v\n", err)
-		os.Exit(1)
-	}
-	if (info.Mode()&os.ModeSymlink) != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
-		fmt.Fprintln(os.Stderr, "secret-file must be a regular file with mode 0600")
-		os.Exit(1)
+		// Enforce mode 0600 and regular file (no symlinks).
+		info, err := os.Lstat(*secretFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to stat secret-file: %v\n", err)
+			os.Exit(1)
+		}
+		if (info.Mode()&os.ModeSymlink) != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			fmt.Fprintln(os.Stderr, "secret-file must be a regular file with mode 0600")
+			os.Exit(1)
+		}
 	}
 
 	// Setup logging (lumberjack) similar to previous behavior.
@@ -94,7 +99,7 @@ func main() {
 		MaxAge:     *logMaxAge,
 	})
 
-	srv := newFileServer(*path, sec, *maxBytes, *rate)
+	srv := newFileServer(*path, sec, *requireAuth, *maxBytes, *rate)
 
 	addrPort := net.JoinHostPort(*addr, *port)
 	log.Printf("Starting service at %s", addrPort)
@@ -107,22 +112,24 @@ func main() {
 type fileServer struct {
 	root     string
 	rootReal string
-	secret   string
-	maxBytes int64
-	rate     float64
-	burst    int
+	secret      string
+	requireAuth bool
+	maxBytes    int64
+	rate        float64
+	burst       int
 
 	limiters map[string]*ipLimiter
 	limMu    sync.Mutex
 }
 
-func newFileServer(rootDir, secret string, maxBytes int64, rate float64) *fileServer {
+func newFileServer(rootDir, secret string, requireAuth bool, maxBytes int64, rate float64) *fileServer {
 	s := &fileServer{
-		secret:   secret,
-		maxBytes: maxBytes,
-		rate:     rate,
-		burst:    40,
-		limiters: make(map[string]*ipLimiter),
+		secret:      secret,
+		requireAuth: requireAuth,
+		maxBytes:    maxBytes,
+		rate:        rate,
+		burst:       40,
+		limiters:    make(map[string]*ipLimiter),
 	}
 	abs, err := filepath.Abs(rootDir)
 	if err != nil {
@@ -158,16 +165,18 @@ func (s *fileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	authz := r.Header.Get("Authorization")
-	const bearerPrefix = "Bearer "
-	if !strings.HasPrefix(authz, bearerPrefix) {
-		writeUnauthorized(w)
-		return
-	}
-	tok := strings.TrimPrefix(authz, bearerPrefix)
-	if subtle.ConstantTimeCompare([]byte(tok), []byte(s.secret)) != 1 {
-		writeUnauthorized(w)
-		return
+	if s.requireAuth {
+		authz := r.Header.Get("Authorization")
+		const bearerPrefix = "Bearer "
+		if !strings.HasPrefix(authz, bearerPrefix) {
+			writeUnauthorized(w)
+			return
+		}
+		tok := strings.TrimPrefix(authz, bearerPrefix)
+		if subtle.ConstantTimeCompare([]byte(tok), []byte(s.secret)) != 1 {
+			writeUnauthorized(w)
+			return
+		}
 	}
 
 	s.serveContent(w, r)

@@ -1,6 +1,6 @@
 # fileserver
 
-A minimal read-only download fileserver with mandatory bearer authentication.
+A minimal read-only download fileserver. Downloads need no token unless `-require-auth` is set. Directory listing is disabled.
 
 # Usage
 
@@ -26,20 +26,28 @@ Usage of ./fileserver:
         Port number. (default "9000")
   -rate float
         Rate limit requests/sec per client IP (0 disables); burst 40. (default 20)
+  -require-auth
+        Require Authorization: Bearer <secret>. Off by default.
   -secret-file string
-        Path to bearer secret file (required; must be mode 0600).
+        Path to bearer secret file (required only with -require-auth; must be mode 0600).
   -v    Show version.
 ```
 
 # Example usage
 
 ```
-./fileserver -path /srv/artifacts -addr 127.0.0.1 -port 9000 -secret-file /etc/fileserver/secret -max-bytes 67108864 -rate 20 &
+./fileserver -path /srv/artifacts -addr 127.0.0.1 -port 9000 -max-bytes 67108864 -rate 20 &
 ```
 
-The server refuses to start if -secret-file is missing, empty, or not a regular file with mode 0600.
+Access is by an unguessable URL. A request for `/` or a directory returns 404.
 
-The secret file must be mode 0600 and is never committed.
+Optional bearer auth:
+
+```
+./fileserver -path /srv/artifacts -addr 127.0.0.1 -port 9000 -require-auth -secret-file /etc/fileserver/secret -max-bytes 67108864 -rate 20 &
+```
+
+With `-require-auth`, the server refuses to start if `-secret-file` is missing, empty, or not a regular file with mode 0600. The secret file is never committed.
 
 Build:
 
